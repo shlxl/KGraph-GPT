@@ -13,3 +13,6 @@ __pycache__/
 
 # Temporary files
 temp_graph.html
+
+# Ignored directories
+lib/
