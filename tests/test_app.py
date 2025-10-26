@@ -4,7 +4,9 @@ import os
 import sys
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 
-from app import generate_graph, KnowledgeGraph
+from app import generate_graph, KnowledgeGraph, Node, Relationship
+
+# --- Integration Test ---
 
 # Note: This is an integration test that makes a real API call.
 # In a larger project, you would mock the LLM call to create a pure unit test.
@@ -43,3 +45,35 @@ def test_graph_generation_and_content():
             break
             
     assert birthplace_relationship_found, "Did not find the 'born in' relationship between Einstein and Germany"
+
+
+# --- Unit Test ---
+
+def test_generate_graph_with_mock_llm(mocker):
+    """Tests the graph generation function with a mocked LLM."""
+    # 1. Create a fake KnowledgeGraph object to be returned by the mock
+    node_a = Node(id="Node A", type="Person")
+    node_b = Node(id="Node B", type="Place")
+    fake_graph = KnowledgeGraph(
+        nodes=[node_a, node_b],
+        relationships=[Relationship(source=node_a, target=node_b, type="Located In")]
+    )
+
+    # 2. Setup the mock LLM chain
+    mock_llm = mocker.MagicMock()
+    mock_structured_llm = mocker.MagicMock()
+    mock_structured_llm.invoke.return_value = fake_graph
+    mock_llm.with_structured_output.return_value = mock_structured_llm
+    
+    # 3. Patch the get_llm function to return our mock LLM
+    mocker.patch('app.get_llm', return_value=mock_llm)
+
+    # 4. Call the function under test
+    # The input text doesn't matter here as the LLM is mocked
+    result_graph = generate_graph("some dummy text")
+
+    # 5. Assert the result
+    assert result_graph == fake_graph
+    # Verify that the LLM was called as expected
+    mock_llm.with_structured_output.assert_called_once_with(KnowledgeGraph)
+    mock_structured_llm.invoke.assert_called_once()

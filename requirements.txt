@@ -93,3 +93,8 @@ xxhash==3.6.0
 zstandard==0.25.0
 pytest==8.4.2
 pytest-mock==3.15.1
+beautifulsoup4==4.14.2
+PyPDF2==3.0.1
+python-docx==1.2.0
+odfpy==1.4.1
+youtube-transcript-api==1.2.3

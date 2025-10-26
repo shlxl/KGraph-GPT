@@ -1,4 +1,6 @@
 import os
+import time
+import re
 import streamlit as st
 from typing import List, Optional
 from pydantic import BaseModel, Field
@@ -6,6 +8,14 @@ from langchain_google_genai import ChatGoogleGenerativeAI
 from pyvis.network import Network
 import streamlit.components.v1 as components
 from dotenv import load_dotenv
+
+# Import parsers for different file types
+from PyPDF2 import PdfReader
+import docx
+from odf.opendocument import load as load_odt
+from odf import text as odf_text, teletype as odf_teletype
+from bs4 import BeautifulSoup
+from youtube_transcript_api import YouTubeTranscriptApi, NoTranscriptFound
 
 # --- CONFIGURATION ---
 
@@ -46,12 +56,96 @@ def get_llm():
 
 # --- CORE LOGIC ---
 
+def is_youtube_url(url: str) -> bool:
+    """Checks if a string is a valid YouTube URL."""
+    youtube_regex = (
+        r'(https?://)?(www\.)?'
+        r'(youtube|youtu|youtube-nocookie)\.(com|be)/'
+        r'(watch\?v=|embed/|v/|.+\?v=)?([^&=%\?]{11})')
+    return re.match(youtube_regex, url) is not None
+
+def get_text_from_youtube(url: str) -> str:
+    """Extracts the transcript from a YouTube video URL."""
+    try:
+        video_id_match = re.search(r'(v=|/)([\w-]+)', url)
+        if not video_id_match:
+            st.error("无法从URL中提取有效的YouTube视频ID。")
+            return ""
+        video_id = video_id_match.group(2)
+        
+        # Correctly instantiate the class and then call the method
+        api = YouTubeTranscriptApi()
+        transcript_list = api.list(video_id)
+        
+        # Find a transcript in the preferred languages
+        try:
+            transcript = transcript_list.find_transcript(['zh-Hans', 'zh-Hant', 'en'])
+        except NoTranscriptFound:
+            # If no manual transcript is found, try to find a generated one
+            try:
+                transcript = transcript_list.find_generated_transcript(['zh-Hans', 'zh-Hant', 'en'])
+            except NoTranscriptFound:
+                st.error(f"视频 {video_id} 未找到中文或英文字幕。")
+                return ""
+
+        # Fetch the actual transcript data and join the text
+        full_transcript = " ".join([item['text'] for item in transcript.fetch()])
+        return full_transcript
+
+    except Exception as e:
+        st.error(f"获取YouTube字幕时发生错误: {e}")
+        return ""
+
+def get_text_from_file(uploaded_file) -> str:
+    """Extracts plain text from an uploaded file based on its extension."""
+    try:
+        file_extension = os.path.splitext(uploaded_file.name)[1].lower()
+        text = ""
+
+        if file_extension == ".pdf":
+            reader = PdfReader(uploaded_file)
+            for page in reader.pages:
+                text += page.extract_text() or ""
+            return text
+
+        elif file_extension == ".docx":
+            doc = docx.Document(uploaded_file)
+            for para in doc.paragraphs:
+                text += para.text + "\n"
+            return text
+
+        elif file_extension == ".odt":
+            doc = load_odt(uploaded_file)
+            all_paras = doc.getElementsByType(odf_text.P)
+            for para in all_paras:
+                text += odf_teletype.extractText(para) + "\n"
+            return text
+        
+        elif file_extension in [".html", ".htm"]:
+            return BeautifulSoup(uploaded_file.read(), "html.parser").get_text()
+        
+        elif file_extension == ".md":
+            md_text = uploaded_file.read().decode("utf-8")
+            # Basic markdown removal
+            text = re.sub(r'[\*\#\`\>]', '', md_text)
+            return text
+
+        elif file_extension == ".txt":
+            return uploaded_file.read().decode("utf-8")
+
+        else:
+            st.warning(f"不支持的文件格式: {file_extension}")
+            return ""
+            
+    except Exception as e:
+        st.error(f"解析文件时发生错误: {e}")
+        return ""
+
 def generate_graph(text: str) -> KnowledgeGraph:
     """Generates a knowledge graph from a given text."""
     llm = get_llm()
     structured_llm = llm.with_structured_output(KnowledgeGraph)
     
-    # Updated prompt to handle bi-directional relationships
     prompt = f"""从以下文本中提取知识图谱。请识别出所有的实体作为节点，以及它们之间的关系。
     确保节点具有唯一的ID（通常是实体的名称）和类型（例如：人、地点、组织、概念）。
     如果实体或关系有额外的属性（例如日期、数量、职位、事件描述等），请将它们提取到'properties'字段中。
@@ -68,25 +162,56 @@ st.title("文本知识图谱提取器")
 st.caption(f"Version {__version__}")
 st.caption("从文本中提取知识图谱并进行可视化。")
 
-text_input = st.text_area("粘贴文本:")
-uploaded_file = st.file_uploader("或者上传一个 .txt 文件", type="txt")
+text_input = st.text_area("粘贴文本（或输入YouTube链接）:")
+uploaded_file = st.file_uploader(
+    "或者上传一个文件", 
+    type=['txt', 'pdf', 'docx', 'md', 'html', 'htm', 'odt']
+)
+
 generate_button = st.button("生成图谱")
 
 if generate_button:
     if not GOOGLE_API_KEY:
         st.error("未找到 GOOGLE_API_KEY。请确保您的 .env 文件已正确设置。")
-    elif not text_input and not uploaded_file:
-        st.warning("请输入文本或上传文件。")
-    else:
-        with st.spinner("正在生成图谱..."):
-            # Determine text source
-            if uploaded_file:
-                text = uploaded_file.read().decode("utf-8")
-            else:
-                text = text_input
+    
+    text_to_process = ""
+    source_type = ""
 
-            try:
-                graph = generate_graph(text)
+    # Determine the source of text to be processed
+    if text_input:
+        if is_youtube_url(text_input):
+            source_type = "youtube"
+        else:
+            source_type = "text"
+    elif uploaded_file:
+        source_type = "file"
+
+    if not source_type:
+        st.warning("请输入文本、YouTube链接或上传文件。")
+    else:
+        # --- Progress Bar & Graph Generation ---
+        progress_bar = st.progress(0, text="正在初始化...")
+        
+        try:
+            # Step 1: Get text from source
+            if source_type == "youtube":
+                progress_bar.progress(5, text=f"正在获取YouTube字幕...")
+                text_to_process = get_text_from_youtube(text_input)
+            elif source_type == "file":
+                progress_bar.progress(5, text=f"正在解析文件...")
+                text_to_process = get_text_from_file(uploaded_file)
+            else: # plain text
+                text_to_process = text_input
+
+            if not text_to_process:
+                progress_bar.empty()
+            else:
+                time.sleep(0.2) # Short delay for UX
+                progress_bar.progress(10, text="正在调用大语言模型... (这可能需要一些时间)")
+                graph = generate_graph(text_to_process)
+
+                progress_bar.progress(90, text="已获取数据，正在渲染图谱...")
+                time.sleep(0.2) # Short delay for UX
 
                 # Visualize the graph
                 if graph.nodes:
@@ -104,10 +229,7 @@ if generate_button:
                             color_index += 1
                         color = type_color_map[node_type]
                         
-                        title = f"Type: {node.type}"
-                        if node.properties:
-                            props_str = "\n".join([f"{k}: {v}" for k, v in node.properties.items()])
-                            title += f"\nProperties:\n{props_str}"
+                        title = node.model_dump_json(indent=2)
                         
                         net.add_node(node.id, label=node.id, title=title, color=color)
 
@@ -119,10 +241,7 @@ if generate_button:
                             color_index += 1
                         color = type_color_map[edge_type]
 
-                        title = f"Type: {edge.type}"
-                        if edge.properties:
-                            props_str = "\n".join([f"{k}: {v}" for k, v in edge.properties.items()])
-                            title += f"\nProperties:\n{props_str}"
+                        title = edge.model_dump_json(indent=2)
 
                         net.add_edge(edge.source.id, edge.target.id, label=edge.type, color=color, title=title)
 
@@ -133,6 +252,7 @@ if generate_button:
                     with open(graph_html_path, "r", encoding="utf-8") as f:
                         html_content = f.read()
                     
+                    progress_bar.progress(100)
                     st.success("图谱生成成功！")
                     components.html(html_content, height=620)
                     
@@ -140,7 +260,11 @@ if generate_button:
                     if os.path.exists(graph_html_path):
                         os.remove(graph_html_path)
                 else:
+                    progress_bar.progress(100)
                     st.warning("未能从文本中提取出任何实体和关系。")
+                
+                progress_bar.empty() # Clear the progress bar
 
-            except Exception as e:
-                st.error(f"生成图谱时发生错误: {e}")
+        except Exception as e:
+            progress_bar.empty() # Clear the progress bar on error too
+            st.error(f"生成图谱时发生错误: {e}")
