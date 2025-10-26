@@ -98,3 +98,4 @@ PyPDF2==3.0.1
 python-docx==1.2.0
 odfpy==1.4.1
 youtube-transcript-api==1.2.3
+neo4j==6.0.2
