@@ -44,7 +44,25 @@ def get_llm():
     """Initializes and caches the LLM."""
     return ChatGoogleGenerativeAI(model="gemini-2.5-pro", temperature=0, google_api_key=GOOGLE_API_KEY)
 
-# --- UI & LOGIC ---
+# --- CORE LOGIC ---
+
+def generate_graph(text: str) -> KnowledgeGraph:
+    """Generates a knowledge graph from a given text."""
+    llm = get_llm()
+    structured_llm = llm.with_structured_output(KnowledgeGraph)
+    
+    # Updated prompt to handle bi-directional relationships
+    prompt = f"""从以下文本中提取知识图谱。请识别出所有的实体作为节点，以及它们之间的关系。
+    确保节点具有唯一的ID（通常是实体的名称）和类型（例如：人、地点、组织、概念）。
+    如果实体或关系有额外的属性（例如日期、数量、职位、事件描述等），请将它们提取到'properties'字段中。
+    特别地，如果关系是双向的（例如‘合作’、‘同事’、‘配偶’），请为每个方向都生成一条关系边（例如 A-合作->B 和 B-合作->A）。
+    文本: {text}
+    """
+    
+    graph = structured_llm.invoke(prompt)
+    return graph
+
+# --- UI & VISUALIZATION ---
 
 st.title("文本知识图谱提取器")
 st.caption(f"Version {__version__}")
@@ -67,20 +85,8 @@ if generate_button:
             else:
                 text = text_input
 
-            # Generate graph using the modern structured output method
             try:
-                llm = get_llm()
-                structured_llm = llm.with_structured_output(KnowledgeGraph)
-                
-                # Updated prompt to handle bi-directional relationships
-                prompt = f"""从以下文本中提取知识图谱。请识别出所有的实体作为节点，以及它们之间的关系。
-                确保节点具有唯一的ID（通常是实体的名称）和类型（例如：人、地点、组织、概念）。
-                如果实体或关系有额外的属性（例如日期、数量、职位、事件描述等），请将它们提取到'properties'字段中。
-                特别地，如果关系是双向的（例如‘合作’、‘同事’、‘配偶’），请为每个方向都生成一条关系边（例如 A-合作->B 和 B-合作->A）。
-                文本: {text}
-                """
-                
-                graph = structured_llm.invoke(prompt)
+                graph = generate_graph(text)
 
                 # Visualize the graph
                 if graph.nodes:
