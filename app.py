@@ -67,11 +67,12 @@ def is_youtube_url(url: str) -> bool:
 def get_text_from_youtube(url: str) -> str:
     """Extracts the transcript from a YouTube video URL."""
     try:
-        video_id_match = re.search(r'(v=|/)([\w-]+)', url)
+        # A robust regex to extract the video ID from various YouTube URL formats
+        video_id_match = re.search(r"(?:v=|\/|embed\/|v\/|youtu\.be\/)([a-zA-Z0-9_-]{11})", url)
         if not video_id_match:
             st.error("无法从URL中提取有效的YouTube视频ID。")
             return ""
-        video_id = video_id_match.group(2)
+        video_id = video_id_match.group(1)
         
         # Correctly instantiate the class and then call the method
         api = YouTubeTranscriptApi()
@@ -89,7 +90,7 @@ def get_text_from_youtube(url: str) -> str:
                 return ""
 
         # Fetch the actual transcript data and join the text
-        full_transcript = " ".join([item['text'] for item in transcript.fetch()])
+        full_transcript = " ".join([item.text for item in transcript.fetch()])
         return full_transcript
 
     except Exception as e:
