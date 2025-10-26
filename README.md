@@ -72,6 +72,47 @@ streamlit run app.py
 
 应用启动后，浏览器将自动打开一个新的标签页，地址通常为 `http://localhost:8501`。
 
+### 🚢 部署 (Deployment)
+
+本项目使用 Docker Compose 来统一管理和启动 Neo4j 服务，极大地方便了部署。
+
+**1. 前提条件**
+
+- 一台安装了 `Docker` 和 `docker-compose` 的服务器。
+
+**2. 配置**
+
+- 将项目克隆到您的服务器上。
+- **重要**: 编辑 `docker-compose.yaml` 文件，将 `NEO4J_AUTH` 环境变量中的 `your_strong_password_here` 替换为您自己的一个强密码。
+- 创建一个 `.env` 文件，填入您的 `GOOGLE_API_KEY` 和您刚刚在 `docker-compose.yaml` 中设置的 `NEO4J_PASSWORD`。两个文件的密码必须完全一致。
+  ```
+  GOOGLE_API_KEY="YOUR_GOOGLE_API_KEY"
+  NEO4J_URI="neo4j://localhost:7687"
+  NEO4J_USER="neo4j"
+  NEO4J_PASSWORD="your_strong_password_here"
+  ```
+
+**3. 启动服务**
+
+在项目根目录下，执行以下命令来启动 Neo4j 数据库服务：
+
+```bash
+docker-compose up -d
+```
+这个命令会以后台模式启动 Neo4j 数据库。
+
+**4. 启动应用**
+
+接着，在同目录下（需要先按“安装与启动”章节的方式创建并激活虚拟环境）启动 Streamlit 应用：
+
+```bash
+streamlit run app.py --server.port 8501 --server.address 0.0.0.0
+```
+
+**5. 访问**
+- **应用界面**: `http://<您的服务器IP>:8501`
+- **Neo4j 浏览器**: `http://<您的服务器IP>:7474` (您可以在这里查看和查询已存入的图谱数据)
+
 ### 📖 如何使用
 
 1.  **输入文本**: 在文本框中输入您想要分析的文字，或者直接粘贴一个 **YouTube 视频链接**。
@@ -149,6 +190,47 @@ With the virtual environment activated, run the following command in the project
 ```bash
 streamlit run app.py
 ```
+
+### 🚢 Deployment
+
+This project uses Docker Compose to manage and launch the Neo4j service, which greatly simplifies deployment.
+
+**1. Prerequisites**
+
+- A server with `Docker` and `docker-compose` installed.
+
+**2. Configuration**
+
+- Clone the project to your server.
+- **Important**: Edit the `docker-compose.yaml` file and replace `your_strong_password_here` in the `NEO4J_AUTH` environment variable with your own strong password.
+- Create a `.env` file and fill in your `GOOGLE_API_KEY` and the `NEO4J_PASSWORD` you just set in `docker-compose.yaml`. The passwords in both files must match perfectly.
+  ```
+  GOOGLE_API_KEY="YOUR_GOOGLE_API_KEY"
+  NEO4J_URI="neo4j://localhost:7687"
+  NEO4J_USER="neo4j"
+  NEO4J_PASSWORD="your_strong_password_here"
+  ```
+
+**3. Launch Services**
+
+In the project root directory, execute the following command:
+
+```bash
+docker-compose up -d
+```
+This command will start the Neo4j database service in the background.
+
+**4. Launch the App**
+
+Next, in the same directory (after creating and activating the virtual environment as per the 'Installation & Running' section), launch the Streamlit app:
+
+```bash
+streamlit run app.py --server.port 8501 --server.address 0.0.0.0
+```
+
+**5. Access**
+- **Application UI**: `http://<YOUR_SERVER_IP>:8501`
+- **Neo4j Browser**: `http://<YOUR_SERVER_IP>:7474` (You can view and query the stored graph data here)
 
 ### 📖 How to Use
 
