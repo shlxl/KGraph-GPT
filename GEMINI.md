@@ -12,6 +12,11 @@ The architecture is centered around a single-file application (`app.py`) which h
 - **Multi-Source Input**: Accepts plain text, YouTube video links (for transcript extraction), and various file formats (`.txt`, `.pdf`, `.docx`, `.odt`, `.html`, `.md`).
 - **Advanced Graph Extraction**: Identifies nodes, properties, and both uni-directional and bi-directional relationships.
 - **Rich Interactive Visualization**: Displays graphs with colored nodes/edges, directionality arrows, and detailed metadata in tooltips on hover.
+- **GraphRAG Enhancements**:
+    - **Configurable Relation Sets**: Supports dynamic loading and selection of relation sets (e.g., `GraphRAG-RELSET-AI-RAG-zh.json`, `GraphRAG-RELSET-GenericWeb-zh.json`).
+    - **Dynamic Prompt Construction**: Utilizes `GraphRAG_prompt.md` as a template for LLM interaction, incorporating dynamic placeholders for document metadata and relation set policies.
+    - **Multi-Document Processing**: Capable of processing multiple documents (e.g., from a Markdown corpus) by aggregating individual knowledge graphs into a single, unified graph.
+    - **Entity Normalization**: Implements post-processing for entity normalization and alias handling using `mentions.jsonl` files, ensuring consistent entity representation across aggregated graphs.
 
 ## Building and Running
 
@@ -56,4 +61,11 @@ pytest
 - **Testing**: Automated tests are located in the `tests/` directory and are run using the `pytest` framework. The test suite includes:
     - An integration test that makes a real API call to verify end-to-end functionality.
     - A unit test that uses `pytest-mock` to test logic without network access.
+    - **GraphRAG Scenario Tests**: A new suite of unit tests (`tests/test_graphrag_scenarios.py`) has been added to cover specific GraphRAG extraction scenarios, including:
+        - Basic extraction with alias normalization.
+        - Temporal qualification.
+        - Negation and rumor clarification.
+        - Multi-hop relationships across documents.
+        - Event and quantity aggregation from multiple sources.
+        - Conflict and disambiguation handling.
 - **Documentation**: The `README.md` file serves as the single source of truth for user-facing and general project documentation.
