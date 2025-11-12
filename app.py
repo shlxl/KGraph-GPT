@@ -1,8 +1,11 @@
 import os
 import time
 import re
+import io
+import zipfile
 import streamlit as st
 from typing import List, Optional, Dict, Any
+from pathlib import Path
 from pydantic import BaseModel, Field
 from langchain_google_genai import ChatGoogleGenerativeAI
 from langchain_core.prompts import ChatPromptTemplate
@@ -34,6 +37,8 @@ NEO4J_URI = os.getenv("NEO4J_URI")
 NEO4J_USER = os.getenv("NEO4J_USER")
 NEO4J_PASSWORD = os.getenv("NEO4J_PASSWORD")
 
+SUPPORTED_FILE_EXTENSIONS = {".txt", ".pdf", ".docx", ".md", ".html", ".htm", ".odt"}
+
 # Load REL_SET configurations
 REL_SETS = {}
 try:
@@ -47,6 +52,18 @@ except FileNotFoundError:
 except json.JSONDecodeError:
     st.error("Error decoding REL_SET JSON files. Please check their format.")
     st.stop()
+
+# Preload available mentions.jsonl files for entity normalization
+MENTIONS_DIR = Path("GraphRAG-Extract-Best-Example-CoralWind-zh/gold")
+AVAILABLE_MENTIONS_FILES = {}
+if MENTIONS_DIR.exists():
+    for mentions_file in sorted(MENTIONS_DIR.glob("*.jsonl")):
+        AVAILABLE_MENTIONS_FILES[mentions_file.name] = mentions_file
+
+EXAMPLE_DIRECTORIES = {}
+EXAMPLE_BASE = Path("GraphRAG-Extract-Best-Example-CoralWind-zh/corpus")
+if EXAMPLE_BASE.exists():
+    EXAMPLE_DIRECTORIES["CoralWind 官方示例语料 (8 篇 TXT)"] = EXAMPLE_BASE
 
 # Load prompt template
 try:
@@ -85,6 +102,127 @@ class KnowledgeGraph(BaseModel):
     relationships: List[Relationship]
     metadata: Optional[Metadata] = None
 
+
+PrimitiveTypes = (str, int, float, bool)
+
+def sanitize_property_value(value):
+    if value is None:
+        return None
+    if isinstance(value, PrimitiveTypes):
+        return value
+    if isinstance(value, list):
+        primitives_only = []
+        for item in value:
+            if item is None:
+                continue
+            if isinstance(item, PrimitiveTypes):
+                primitives_only.append(item)
+            else:
+                return json.dumps(value, ensure_ascii=False)
+        return primitives_only
+    return json.dumps(value, ensure_ascii=False)
+
+
+def sanitize_properties(properties: Optional[Dict[str, Any]]) -> Dict[str, Any]:
+    sanitized = {}
+    if not properties:
+        return sanitized
+    for key, value in properties.items():
+        sanitized_value = sanitize_property_value(value)
+        if sanitized_value is not None:
+            sanitized[key] = sanitized_value
+    return sanitized
+
+
+def sanitize_relationship_type(rel_type: Optional[str]) -> str:
+    if not rel_type:
+        return "RELATIONSHIP"
+    cleaned = re.sub(r"[^A-Za-z0-9_]", "_", rel_type)
+    cleaned = re.sub(r"_+", "_", cleaned).strip("_")
+    return cleaned.upper() if cleaned else "RELATIONSHIP"
+
+
+def process_markdown_content(markdown_content: str, fallback_doc_id: str, fallback_source: str) -> List[Dict[str, Any]]:
+    documents = []
+    if "/corpus/" in markdown_content:
+        parser = MarkdownMultiDocumentParser()
+        parsed_docs = parser.parse(markdown_content)
+        if parsed_docs:
+            documents.extend(parsed_docs)
+        else:
+            st.warning(f"未能在 {fallback_source} 中找到任何可解析的多文档内容。")
+    else:
+        cleaned_text = re.sub(r'[\*\#\`\>]', '', markdown_content)
+        documents.append({
+            "doc_id": fallback_doc_id,
+            "source": fallback_source,
+            "date": time.strftime("%Y-%m-%d"),
+            "text_with_sentence_ids": cleaned_text
+        })
+    return documents
+
+
+def get_text_from_path(file_path: Path) -> str:
+    file_extension = file_path.suffix.lower()
+    try:
+        if file_extension == ".pdf":
+            text = ""
+            with file_path.open("rb") as f:
+                reader = PdfReader(f)
+                for page in reader.pages:
+                    text += page.extract_text() or ""
+            return text
+        elif file_extension == ".docx":
+            with file_path.open("rb") as f:
+                doc = docx.Document(f)
+            text = "\n".join(para.text for para in doc.paragraphs)
+            return text
+        elif file_extension == ".odt":
+            doc = load_odt(str(file_path))
+            all_paras = doc.getElementsByType(odf_text.P)
+            text = "\n".join(odf_teletype.extractText(para) for para in all_paras)
+            return text
+        elif file_extension in [".html", ".htm"]:
+            with file_path.open("r", encoding="utf-8") as f:
+                return BeautifulSoup(f.read(), "html.parser").get_text()
+        elif file_extension == ".txt":
+            return file_path.read_text(encoding="utf-8")
+        else:
+            st.warning(f"目录中文件 {file_path.name} 的格式暂不支持。")
+            return ""
+    except Exception as e:
+        st.error(f"读取文件 {file_path} 时发生错误: {e}")
+        return ""
+
+
+def load_documents_from_directory(directory_path: Path) -> List[Dict[str, Any]]:
+    documents = []
+    if not directory_path.exists() or not directory_path.is_dir():
+        st.error(f"目录 {directory_path} 不存在或不是有效目录。")
+        return documents
+
+    matched_files = sorted([p for p in directory_path.rglob("*") if p.suffix.lower() in SUPPORTED_FILE_EXTENSIONS and p.is_file()])
+
+    if not matched_files:
+        st.warning(f"目录 {directory_path} 中未找到支持的文件类型: {', '.join(sorted(SUPPORTED_FILE_EXTENSIONS))}")
+        return documents
+
+    for file_path in matched_files:
+        extension = file_path.suffix.lower()
+        relative_name = str(file_path.relative_to(directory_path))
+        if extension == ".md":
+            markdown_content = file_path.read_text(encoding="utf-8")
+            documents.extend(process_markdown_content(markdown_content, relative_name, relative_name))
+        else:
+            text = get_text_from_path(file_path)
+            documents.append({
+                "doc_id": relative_name,
+                "source": relative_name,
+                "date": time.strftime("%Y-%m-%d"),
+                "text_with_sentence_ids": text
+            })
+    return documents
+
 # --- DATABASE LOGIC ---
 
 class Neo4jDatabase:
@@ -104,6 +242,7 @@ class Neo4jDatabase:
 
     @staticmethod
     def _create_node(tx, node: Node, metadata: dict):
+        node_properties = sanitize_properties(node.properties)
         query = (
             "MERGE (n:Node {id: $id}) "
             "SET n.type = $type "
@@ -114,14 +253,17 @@ class Neo4jDatabase:
             "SET n.source = $metadata.source "
             "SET n.timestamp = $metadata.timestamp"
         )
-        tx.run(query, id=node.id, type=node.type, properties=node.properties or {}, color=node.color, metadata=metadata)
+        tx.run(query, id=node.id, type=node.type, properties=node_properties, color=node.color, metadata=metadata)
 
     @staticmethod
     def _create_relationship(tx, rel: Relationship, metadata: dict):
+        rel_properties = sanitize_properties(rel.properties)
+        evidence_value = sanitize_property_value(rel.evidence)
+        sanitized_rel_type = sanitize_relationship_type(rel.type)
         query = (
             "MATCH (a:Node) WHERE a.id = $source_id "
             "MATCH (b:Node) WHERE b.id = $target_id "
-            f"MERGE (a)-[r:{rel.type}]->(b) "
+            f"MERGE (a)-[r:{sanitized_rel_type}]->(b) "
             "SET r += $properties "
             "SET r.color = $color "
             "SET r.evidence = $evidence "
@@ -131,7 +273,16 @@ class Neo4jDatabase:
             "SET r.source = $metadata.source "
             "SET r.timestamp = $metadata.timestamp"
         )
-        tx.run(query, source_id=rel.source.id, target_id=rel.target.id, properties=rel.properties or {}, color=rel.color, evidence=rel.evidence, confidence=rel.confidence, metadata=metadata)
+        tx.run(
+            query,
+            source_id=rel.source.id,
+            target_id=rel.target.id,
+            properties=rel_properties,
+            color=rel.color,
+            evidence=evidence_value,
+            confidence=rel.confidence,
+            metadata=metadata,
+        )
 
 # --- MODEL INITIALIZATION ---
 
@@ -276,11 +427,25 @@ uploaded_file = st.file_uploader(
     key="uploaded_file"
 )
 
-uploaded_mentions_file = st.file_uploader(
-    "上传 mentions.jsonl 文件进行实体规范化 (可选)",
-    type=['jsonl'],
-    key="uploaded_mentions_file"
+directory_path_input = st.text_input(
+    "输入本地目录路径以批量处理（可选）",
+    value="",
+    placeholder="例如：GraphRAG-Extract-Best-Example-CoralWind-zh/corpus"
 )
+
+example_directory_selection = []
+if EXAMPLE_DIRECTORIES:
+    example_directory_selection = st.multiselect(
+        "或直接选择内置示例目录（可多选）",
+        list(EXAMPLE_DIRECTORIES.keys())
+    )
+
+mention_selection_options = ["不使用实体规范化"] + list(AVAILABLE_MENTIONS_FILES.keys())
+selected_mentions_option = st.selectbox(
+    "选择实体规范化数据源 (提取自 GraphRAG-Extract-Best-Example-CoralWind-zh/gold)",
+    mention_selection_options
+)
+selected_mentions_path = AVAILABLE_MENTIONS_FILES.get(selected_mentions_option)
 
 model_selection = st.selectbox(
     "选择一个模型:",
@@ -382,13 +547,24 @@ def normalize_entities(graph: KnowledgeGraph, mentions_data: List[Dict[str, Any]
     合并具有相同规范化ID的节点属性，并确保关系源和目标引用实际的规范化Node对象。
     """
     id_mapping = {}
-    for mention_entry in mentions_data:
-        canonical_id = mention_entry["canonical_id"]
+    for idx, mention_entry in enumerate(mentions_data, start=1):
+        canonical_id = mention_entry.get("canonical_id")
+        name = mention_entry.get("name")
+        aliases = mention_entry.get("aliases", [])
+
+        if not canonical_id or not name:
+            st.warning(f"mentions.jsonl 第 {idx} 行缺少 canonical_id 或 name，已跳过该条记录。")
+            continue
+
+        if not isinstance(aliases, list):
+            aliases = [aliases]
+
         # Map the canonical name itself
-        id_mapping[mention_entry["name"]] = canonical_id
+        id_mapping[name] = canonical_id
         # Map all aliases
-        for alias in mention_entry["aliases"]:
-            id_mapping[alias] = canonical_id
+        for alias in aliases:
+            if alias:
+                id_mapping[alias] = canonical_id
     
     # Use a dictionary to store unique normalized nodes, keyed by their normalized ID
     unique_normalized_nodes: Dict[str, Node] = {}
@@ -450,55 +626,56 @@ if generate_button:
     documents_to_process = []
     
     if text_input:
-        if is_youtube_url(text_input):
-            documents_to_process.append({
-                "doc_id": "youtube_video",
-                "source": text_input,
-                "date": time.strftime("%Y-%m-%d"),
-                "text_with_sentence_ids": get_text_from_youtube(text_input)
-            })
-        else:
-            documents_to_process.append({
-                "doc_id": "text_input",
-                "source": "用户输入",
-                "date": time.strftime("%Y-%m-%d"),
-                "text_with_sentence_ids": text_input
-            })
-    elif uploaded_file:
+        input_text = text_input.strip()
+        if input_text:
+            if is_youtube_url(input_text):
+                documents_to_process.append({
+                    "doc_id": "youtube_video",
+                    "source": input_text,
+                    "date": time.strftime("%Y-%m-%d"),
+                    "text_with_sentence_ids": get_text_from_youtube(input_text)
+                })
+            else:
+                documents_to_process.append({
+                    "doc_id": "text_input",
+                    "source": "用户输入",
+                    "date": time.strftime("%Y-%m-%d"),
+                    "text_with_sentence_ids": input_text
+                })
+    
+    if uploaded_file:
         file_extension = os.path.splitext(uploaded_file.name)[1].lower()
         if file_extension == ".md":
             markdown_content = uploaded_file.read().decode("utf-8")
-            # Check if it's a multi-document markdown
-            if "/corpus/" in markdown_content:
-                parser = MarkdownMultiDocumentParser()
-                parsed_docs = parser.parse(markdown_content)
-                if parsed_docs:
-                    documents_to_process.extend(parsed_docs)
-                else:
-                    st.warning("未能在多文档Markdown文件中找到任何可解析的文档。")
-            else:
-                # Treat as a single markdown file
-                documents_to_process.append({
-                    "doc_id": uploaded_file.name,
-                    "source": uploaded_file.name,
-                    "date": time.strftime("%Y-%m-%d"),
-                    "text_with_sentence_ids": get_text_from_file(uploaded_file)
-                })
+            documents_to_process.extend(process_markdown_content(markdown_content, uploaded_file.name, uploaded_file.name))
         else:
+            uploaded_file.seek(0)
             documents_to_process.append({
                 "doc_id": uploaded_file.name,
                 "source": uploaded_file.name,
                 "date": time.strftime("%Y-%m-%d"),
                 "text_with_sentence_ids": get_text_from_file(uploaded_file)
             })
+    
+    if directory_path_input.strip():
+        directory_path = Path(directory_path_input.strip()).expanduser()
+        directory_documents = load_documents_from_directory(directory_path)
+        documents_to_process.extend(directory_documents)
+    
+    if example_directory_selection:
+        for example_label in example_directory_selection:
+            example_path = EXAMPLE_DIRECTORIES.get(example_label)
+            if example_path:
+                documents_to_process.extend(load_documents_from_directory(example_path))
 
     if not documents_to_process or not any(doc["text_with_sentence_ids"] for doc in documents_to_process):
-        st.warning("请输入文本、YouTube链接或上传文件。")
+        st.warning("请输入文本、YouTube链接、上传文件，或提供有效的目录路径。")
         st.stop()
     else:
         progress_bar = st.progress(0, text="正在初始化...")
         all_graphs = []
         total_docs = len(documents_to_process)
+        doc_source_summary = [doc.get("source") for doc in documents_to_process if doc.get("source")]
 
         for i, doc_data in enumerate(documents_to_process):
             doc_id = doc_data["doc_id"]
@@ -550,14 +727,38 @@ if generate_button:
         )
 
         # --- Entity Normalization/Alias Handling ---
-        if uploaded_mentions_file:
+        if selected_mentions_path:
             progress_bar.progress(70, text="正在进行实体规范化...")
             try:
                 mentions_data = []
-                for line in uploaded_mentions_file.readlines():
-                    mentions_data.append(json.loads(line))
-                aggregated_graph = normalize_entities(aggregated_graph, mentions_data)
-                st.success("实体规范化完成。")
+                with open(selected_mentions_path, "r", encoding="utf-8") as mentions_file:
+                    for line_number, raw_line in enumerate(mentions_file, start=1):
+                        line = raw_line.strip()
+                        if not line:
+                            continue
+                        try:
+                            record = json.loads(line)
+                        except json.JSONDecodeError as json_err:
+                            st.warning(f"{selected_mentions_option} 第 {line_number} 行解析失败: {json_err}")
+                            continue
+
+                        missing_fields = [field for field in ("canonical_id", "name") if field not in record]
+                        if missing_fields:
+                            st.warning(f"{selected_mentions_option} 第 {line_number} 行缺少字段: {', '.join(missing_fields)}，已跳过该条记录。")
+                            continue
+
+                        if "aliases" not in record or record["aliases"] is None:
+                            record["aliases"] = []
+                        elif not isinstance(record["aliases"], list):
+                            record["aliases"] = [record["aliases"]]
+
+                        mentions_data.append(record)
+
+                if mentions_data:
+                    aggregated_graph = normalize_entities(aggregated_graph, mentions_data)
+                    st.success("实体规范化完成。")
+                else:
+                    st.warning("未找到有效的实体规范化数据，已跳过该步骤。")
             except Exception as e:
                 st.error(f"实体规范化失败: {e}")
                 st.stop()
@@ -568,10 +769,13 @@ if generate_button:
         if aggregated_graph.nodes:
             # Visualize the aggregated graph
             if layout_selection == "Hierarchical":
-                net = Network(height="600px", width="100%", bgcolor=background_color, font_color=font_color, notebook=True, directed=True, layout="hierarchical", show_buttons=navigation_buttons_enabled, cdn_resources='in_line')
+                net = Network(height="600px", width="100%", bgcolor=background_color, font_color=font_color, notebook=True, directed=True, layout="hierarchical", cdn_resources='in_line')
             else:
-                net = Network(height="600px", width="100%", bgcolor=background_color, font_color=font_color, notebook=True, directed=True, show_buttons=navigation_buttons_enabled, cdn_resources='in_line')
+                net = Network(height="600px", width="100%", bgcolor=background_color, font_color=font_color, notebook=True, directed=True, cdn_resources='in_line')
                 net.force_atlas_2based()
+
+            if navigation_buttons_enabled:
+                net.show_buttons()
             
             net.set_options(f"""
             var options = {{
@@ -675,11 +879,35 @@ if generate_button:
             progress_bar.progress(100)
             st.success("聚合图谱生成成功！")
             components.html(html_content, height=620)
+            json_payload = aggregated_graph.model_dump()
+            download_json = json.dumps(json_payload, ensure_ascii=False, indent=2)
             st.download_button(
                 label="下载聚合图谱 (JSON)",
-                data=aggregated_graph.model_dump_json(indent=2),
+                data=download_json,
                 file_name="aggregated_knowledge_graph.json",
                 mime="application/json"
+            )
+
+            submission_zip = io.BytesIO()
+            with zipfile.ZipFile(submission_zip, "w", zipfile.ZIP_DEFLATED) as zip_file:
+                zip_file.writestr("aggregated_knowledge_graph.json", download_json)
+                zip_file.writestr("graph.html", html_content)
+                run_metadata = {
+                    "generated_at": time.strftime("%Y-%m-%d %H:%M:%S"),
+                    "document_sources": doc_source_summary,
+                    "selected_mentions": selected_mentions_option if selected_mentions_path else "未使用",
+                    "example_directories": example_directory_selection,
+                    "custom_directory": directory_path_input.strip() or "未提供",
+                    "model": model_selection,
+                    "rel_set": rel_set_selection
+                }
+                zip_file.writestr("run_metadata.json", json.dumps(run_metadata, ensure_ascii=False, indent=2))
+            submission_zip.seek(0)
+            st.download_button(
+                label="下载提交包 (ZIP，含HTML+JSON+Metadata)",
+                data=submission_zip.getvalue(),
+                file_name="knowledge_graph_submission.zip",
+                mime="application/zip"
             )
             if os.path.exists(graph_html_path):
                 os.remove(graph_html_path)

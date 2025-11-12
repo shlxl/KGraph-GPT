@@ -1,0 +1,26 @@
+{
+  "weights": {
+    "triple_precision": 0.35,
+    "triple_recall": 0.35,
+    "qualifier_accuracy": 0.10,
+    "alias_linking": 0.05,
+    "coref_resolution": 0.05,
+    "evidence_hit": 0.10
+  },
+  "evidence": {
+    "policy": "至少命中一个 required_evidence.doc；若提供句级坐标则加分",
+    "partial_credit": {
+      "nearby_distance_tolerance_km": 0.5,
+      "numeric_sum_relative_tolerance": 0.02
+    }
+  },
+  "negation": {
+    "must_support_with_authority": true,
+    "authority_preference_order": ["GovernmentAgency","Government","ResearchOrg","News","SocialMedia"]
+  },
+  "coref": {
+    "name_collision_cases": ["周启明"],
+    "penalty_wrong_merge": 0.5,
+    "penalty_wrong_split": 0.3
+  }
+}
